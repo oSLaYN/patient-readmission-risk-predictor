@@ -2,6 +2,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import traceback
+import os
+import joblib
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,6 +16,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, accuracy_score, roc_auc_score, roc_curve
 from sklearn.utils.class_weight import compute_class_weight
+from xgboost import XGBClassifier
 
 try:
     import tensorflow as tf
@@ -28,6 +31,67 @@ st.set_page_config(page_title="Patient Readmission Risk Predictor", page_icon="�
 
 # Constants
 RANDOM_STATE = 42
+EXPECTED_FEATURES = [
+    'age', 'admission_type_id', 'discharge_disposition_id', 'admission_source_id',
+    'time_in_hospital', 'num_lab_procedures', 'num_procedures', 'num_medications',
+    'number_outpatient', 'number_emergency', 'number_inpatient', 'number_diagnoses',
+    'race_Asian', 'race_Caucasian', 'race_Hispanic', 'race_Other', 'race_Unknown',
+    'gender_Male', 'gender_Unknown/Invalid', 'diag_1_Diabetes', 'diag_1_Digestive',
+    'diag_1_Genitourinary', 'diag_1_Injury', 'diag_1_Missing', 'diag_1_Musculoskeletal',
+    'diag_1_Neoplasms', 'diag_1_Other', 'diag_1_Respiratory', 'diag_2_Diabetes',
+    'diag_2_Digestive', 'diag_2_Genitourinary', 'diag_2_Injury', 'diag_2_Missing',
+    'diag_2_Musculoskeletal', 'diag_2_Neoplasms', 'diag_2_Other', 'diag_2_Respiratory',
+    'diag_3_Diabetes', 'diag_3_Digestive', 'diag_3_Genitourinary', 'diag_3_Injury',
+    'diag_3_Missing', 'diag_3_Musculoskeletal', 'diag_3_Neoplasms', 'diag_3_Other',
+    'diag_3_Respiratory', 'max_glu_serum_>300', 'max_glu_serum_Norm', 'A1Cresult_>8',
+    'A1Cresult_Norm', 'metformin_No', 'metformin_Steady', 'metformin_Up',
+    'repaglinide_No', 'repaglinide_Steady', 'repaglinide_Up', 'nateglinide_No',
+    'nateglinide_Steady', 'nateglinide_Up', 'chlorpropamide_No', 'chlorpropamide_Steady',
+    'chlorpropamide_Up', 'glimepiride_No', 'glimepiride_Steady', 'glimepiride_Up',
+    'acetohexamide_Steady', 'glipizide_No', 'glipizide_Steady', 'glipizide_Up',
+    'glyburide_No', 'glyburide_Steady', 'glyburide_Up', 'tolbutamide_Steady',
+    'pioglitazone_No', 'pioglitazone_Steady', 'pioglitazone_Up', 'rosiglitazone_No',
+    'rosiglitazone_Steady', 'rosiglitazone_Up', 'acarbose_No', 'acarbose_Steady',
+    'acarbose_Up', 'miglitol_No', 'miglitol_Steady', 'miglitol_Up', 'troglitazone_Steady',
+    'tolazamide_Steady', 'tolazamide_Up', 'insulin_No', 'insulin_Steady', 'insulin_Up',
+    'glyburide-metformin_No', 'glyburide-metformin_Steady', 'glyburide-metformin_Up',
+    'glipizide-metformin_Steady', 'glimepiride-pioglitazone_Steady',
+    'metformin-rosiglitazone_Steady', 'metformin-pioglitazone_Steady', 'change_No',
+    'diabetesMed_Yes', 'admission_type_Emergency', 'admission_type_Newborn',
+    'admission_type_Not Available', 'admission_type_Not Mapped',
+    'admission_type_Trauma Center', 'admission_type_Urgent',
+    'discharge_disposition_Discharged to home', 'discharge_disposition_Discharged/transferred to ICF',
+    'discharge_disposition_Discharged/transferred to SNF',
+    'discharge_disposition_Discharged/transferred to a federal health care facility.',
+    'discharge_disposition_Discharged/transferred to a long term care hospital.',
+    'discharge_disposition_Discharged/transferred to a nursing facility certified under Medicaid but not certified under Medicare.',
+    'discharge_disposition_Discharged/transferred to another rehab fac including rehab units of a hospital .',
+    'discharge_disposition_Discharged/transferred to another short term hospital',
+    'discharge_disposition_Discharged/transferred to another type of inpatient care institution',
+    'discharge_disposition_Discharged/transferred to home under care of Home IV provider',
+    'discharge_disposition_Discharged/transferred to home with home health service',
+    'discharge_disposition_Discharged/transferred within this institution to Medicare approved swing bed',
+    'discharge_disposition_Discharged/transferred/referred another institution for outpatient services',
+    'discharge_disposition_Discharged/transferred/referred to a psychiatric hospital of psychiatric distinct part unit of a hospital',
+    'discharge_disposition_Discharged/transferred/referred to this institution for outpatient services',
+    'discharge_disposition_Expired', 'discharge_disposition_Expired at home. Medicaid only, hospice.',
+    'discharge_disposition_Expired in a medical facility. Medicaid only, hospice.',
+    'discharge_disposition_Hospice / home', 'discharge_disposition_Hospice / medical facility',
+    'discharge_disposition_Left AMA',
+    'discharge_disposition_Neonate discharged to another hospital for neonatal aftercare',
+    'discharge_disposition_Not Mapped',
+    'discharge_disposition_Still patient or expected to return for outpatient services',
+    'admission_source_ Emergency Room', 'admission_source_ Extramural Birth',
+    'admission_source_ Not Available', 'admission_source_ Not Mapped',
+    'admission_source_ Physician Referral', 'admission_source_ Sick Baby',
+    'admission_source_ Transfer from Ambulatory Surgery Center',
+    'admission_source_ Transfer from a Skilled Nursing Facility (SNF)',
+    'admission_source_ Transfer from another health care facility',
+    'admission_source_ Transfer from critial access hospital',
+    'admission_source_ Transfer from hospital inpt/same fac reslt in a sep claim',
+    'admission_source_Clinic Referral', 'admission_source_HMO Referral',
+    'admission_source_Normal Delivery', 'admission_source_Transfer from a hospital'
+]
 
 # -------------------------------------------------------------------------------------------------
 # 1. Data Loading & Clean-Up
@@ -75,10 +139,9 @@ def load_data():
         # Target column: binary classification — '<30' vs anything else
         df['readmitted_binary'] = (df['readmitted'] == '<30').astype(int)
 
-        # Drop identifiers and now-redundant numeric ID columns
+        # Keep redundant numeric ID columns as they were used in training
         df.drop(
-            columns=['encounter_id', 'patient_nbr',
-                     'admission_type_id', 'discharge_disposition_id', 'admission_source_id'],
+            columns=['encounter_id', 'patient_nbr', 'readmitted'],
             inplace=True, errors='ignore'
         )
 
@@ -102,12 +165,30 @@ def load_data():
             if col in df.columns:
                 df[col].fillna(df[col].mode()[0], inplace=True)
 
-        # Cardinality reduction: keep top-20 diagnosis values, merge rest → "Other"
-        # This prevents a feature-count explosion during One-Hot Encoding
+        # ICD-9 code grouping (Matching main.ipynb logic)
+        def map_icd9(val):
+            if pd.isna(val) or val == '?':
+                return 'Missing'
+            val_str = str(val).upper()
+            if val_str.startswith('V') or val_str.startswith('E'):
+                return 'Other'
+            try:
+                v = float(val_str)
+                if 250 <= v < 251: return 'Diabetes'
+                elif (390 <= v <= 459) or v == 785: return 'Circulatory'
+                elif (460 <= v <= 519) or v == 786: return 'Respiratory'
+                elif (520 <= v <= 579) or v == 787: return 'Digestive'
+                elif 800 <= v <= 999: return 'Injury'
+                elif 710 <= v <= 739: return 'Musculoskeletal'
+                elif (580 <= v <= 629) or v == 788: return 'Genitourinary'
+                elif 140 <= v <= 239: return 'Neoplasms'
+                else: return 'Other'
+            except ValueError:
+                return 'Other'
+
         for col in ['diag_1', 'diag_2', 'diag_3']:
             if col in df.columns:
-                top_20 = df[col].value_counts().nlargest(20).index
-                df.loc[~df[col].isin(top_20), col] = 'Other'
+                df[col] = df[col].apply(map_icd9)
 
         return df
 
@@ -135,8 +216,13 @@ def preprocess_data(df):
     categorical_cols = df_features.select_dtypes(include=['object']).columns.tolist()
     df_encoded = pd.get_dummies(df_features, columns=categorical_cols, drop_first=True)
 
-    # Drop constant columns — they cause divide-by-zero in StandardScaler
-    df_encoded = df_encoded.loc[:, df_encoded.nunique() > 1]
+    # Feature Alignment: ensure all expected columns exist, fill missing with 0
+    for col in EXPECTED_FEATURES:
+        if col not in df_encoded.columns:
+            df_encoded[col] = 0
+    
+    # Reorder columns to match training set exactly
+    df_encoded = df_encoded[EXPECTED_FEATURES]
 
     X = df_encoded.values.astype(np.float32)
     y = target.values
@@ -157,9 +243,16 @@ def preprocess_data(df):
 # -------------------------------------------------------------------------------------------------
 # 3. Model Training (cached so they only run once per session)
 # -------------------------------------------------------------------------------------------------
-@st.cache_resource(show_spinner="Training ML Models (LR + RF)...")
-def train_ml_models(_X_train, _y_train):
-    """Underscore-prefix tells Streamlit not to hash these numpy arrays."""
+@st.cache_resource(show_spinner="Preparing ML Models (Loading from disk or training)...")
+def get_ml_models(_X_train, _y_train):
+    """Loads optimized models from disk if available, otherwise falls back to training."""
+    if os.path.exists('models/logistic_regression.joblib') and os.path.exists('models/xgboost.joblib'):
+        lr_model = joblib.load('models/logistic_regression.joblib')
+        rf_model = joblib.load('models/random_forest.joblib')
+        xgb_model = joblib.load('models/xgboost.joblib')
+        return lr_model, rf_model, xgb_model
+
+    # Fallback: Train if models directory not found
     lr_model = LogisticRegression(
         class_weight='balanced', max_iter=200, n_jobs=-1, random_state=RANDOM_STATE
     )
@@ -170,12 +263,26 @@ def train_ml_models(_X_train, _y_train):
         n_jobs=-1, random_state=RANDOM_STATE
     )
     rf_model.fit(_X_train, _y_train)
+    
+    cw_values = compute_class_weight('balanced', classes=np.unique(_y_train), y=_y_train)
+    class_weights = dict(zip(np.unique(_y_train), cw_values))
+    xgb_model = XGBClassifier(
+        n_estimators=50, max_depth=6, learning_rate=0.1,
+        scale_pos_weight=class_weights[1] / class_weights[0],
+        random_state=RANDOM_STATE, n_jobs=-1, eval_metric='logloss'
+    )
+    xgb_model.fit(_X_train, _y_train)
 
-    return lr_model, rf_model
+    return lr_model, rf_model, xgb_model
 
 
-@st.cache_resource(show_spinner="Training Deep Learning Model (Keras)...")
-def train_dl_model(_X_train, _y_train):
+@st.cache_resource(show_spinner="Preparing Deep Learning Model (Keras)...")
+def get_dl_model(_X_train, _y_train):
+    if os.path.exists('models/keras_model.h5'):
+        model = keras.models.load_model('models/keras_model.h5')
+        return model
+
+    # Fallback: Train if not found
     tf.random.set_seed(RANDOM_STATE)
 
     cw_values = compute_class_weight(
@@ -320,17 +427,17 @@ def page_models(df):
 
     X_train_scaled, X_test_scaled, y_train, y_test, feature_names = result
 
-    with st.spinner("Training ML models (first run only)…"):
-        lr_model, rf_model = train_ml_models(X_train_scaled, y_train)
+    with st.spinner("Preparing ML models (First run may take a moment if tuning hasn't been saved)…"):
+        lr_model, rf_model, xgb_model = get_ml_models(X_train_scaled, y_train)
 
     dl_model = None
     if TF_AVAILABLE:
-        with st.spinner("Training Keras model (first run only)…"):
-            dl_model = train_dl_model(X_train_scaled, y_train)
+        with st.spinner("Preparing Keras model…"):
+            dl_model = get_dl_model(X_train_scaled, y_train)
 
     # Feature Importance
     st.markdown("### 1. Feature Importance")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         st.markdown("**Top 10 — Random Forest (Impurity-based)**")
@@ -339,7 +446,7 @@ def page_models(df):
             .sort_values(ascending=False)
             .head(10)
         )
-        fig_rf, ax_rf = plt.subplots(figsize=(6, 4))
+        fig_rf, ax_rf = plt.subplots(figsize=(5, 3.5))
         sns.barplot(x=rf_imp.values, y=rf_imp.index, palette='Blues_r', ax=ax_rf)
         ax_rf.set_xlabel("Importance")
         plt.tight_layout()
@@ -353,12 +460,26 @@ def page_models(df):
             .sort_values(ascending=False)
             .head(10)
         )
-        fig_lr, ax_lr = plt.subplots(figsize=(6, 4))
+        fig_lr, ax_lr = plt.subplots(figsize=(5, 3.5))
         sns.barplot(x=lr_imp.values, y=lr_imp.index, palette='Greens_r', ax=ax_lr)
         ax_lr.set_xlabel("|Coefficient|")
         plt.tight_layout()
         st.pyplot(fig_lr)
         plt.close(fig_lr)
+
+    with col3:
+        st.markdown("**Top 10 — XGBoost (Weight)**")
+        xgb_imp = (
+            pd.Series(xgb_model.feature_importances_, index=feature_names)
+            .sort_values(ascending=False)
+            .head(10)
+        )
+        fig_xgb, ax_xgb = plt.subplots(figsize=(5, 3.5))
+        sns.barplot(x=xgb_imp.values, y=xgb_imp.index, palette='Oranges_r', ax=ax_xgb)
+        ax_xgb.set_xlabel("Importance")
+        plt.tight_layout()
+        st.pyplot(fig_xgb)
+        plt.close(fig_xgb)
 
     st.markdown("---")
     st.markdown("### 2. Model Performance Comparison")
@@ -370,7 +491,10 @@ def page_models(df):
     rf_preds = rf_model.predict(X_test_scaled)
     rf_probs = rf_model.predict_proba(X_test_scaled)[:, 1]
 
-    n_cols = 3 if dl_model else 2
+    xgb_preds = xgb_model.predict(X_test_scaled)
+    xgb_probs = xgb_model.predict_proba(X_test_scaled)[:, 1]
+
+    n_cols = 4 if dl_model else 3
     cols = st.columns(n_cols)
 
     with cols[0]:
@@ -385,10 +509,16 @@ def page_models(df):
         st.metric("Accuracy", f"{accuracy_score(y_test, rf_preds):.4f}")
         st.text(classification_report(y_test, rf_preds))
 
+    with cols[2]:
+        st.error("**XGBoost**")
+        st.metric("ROC-AUC", f"{roc_auc_score(y_test, xgb_probs):.4f}")
+        st.metric("Accuracy", f"{accuracy_score(y_test, xgb_preds):.4f}")
+        st.text(classification_report(y_test, xgb_preds))
+
     if dl_model:
         dl_probs = dl_model.predict(X_test_scaled, verbose=0).flatten()
         dl_preds = (dl_probs > 0.5).astype(int)
-        with cols[2]:
+        with cols[3]:
             st.warning("**Deep Learning (Keras)**")
             st.metric("ROC-AUC", f"{roc_auc_score(y_test, dl_probs):.4f}")
             st.metric("Accuracy", f"{accuracy_score(y_test, dl_preds):.4f}")
@@ -400,6 +530,7 @@ def page_models(df):
     models_to_plot = [
         ("Logistic Regression", lr_probs),
         ("Random Forest", rf_probs),
+        ("XGBoost", xgb_probs),
     ]
     if dl_model:
         models_to_plot.append(("Keras Neural Network", dl_probs))
@@ -426,7 +557,7 @@ def main():
     st.title("🏥 Patient Readmission Risk Predictor")
     st.markdown(
         "Interactive dashboard for the **Diabetes 130-US Hospitals** dataset. "
-        "Compares Logistic Regression, Random Forest, and Keras Neural Network "
+        "Compares Logistic Regression, Random Forest, XGBoost, and Keras Neural Network "
         "on predicting 30-day hospital readmission."
     )
 
